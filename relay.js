@@ -59,8 +59,8 @@ var Relay = function TorRelay(opts) {
             port: opts.controlPort || null
         },
         socks: {
-            //username: opts.socksUsername || (opts.autoCredentials ? createCredential() : null),
-            //password: opts.socksPassword || (opts.autoCredentials ? createCredential() : null),
+            username: opts.socksUsername || null,
+            password: opts.socksPassword || null,
             port: opts.socksPort || null
         }
     };
