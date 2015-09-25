@@ -19,7 +19,9 @@ describe('Tor Relay', function () {
                 controlPort: 1234,
                 socksUsername: 'test',
                 socksPassword: 'test',
-                socksPort: 1235
+                socksPort: 1235,
+                timeout: 54321,
+                retries: 7
             });
 
             if (relay.service.control.password !== 'test') {
@@ -37,15 +39,24 @@ describe('Tor Relay', function () {
             if (relay.service.socks.username !== 'test') {
                 throw new Error('Wrong socks username');
             }
+            if (relay.timeout !== 54321) {
+                throw new Error('Wrong timeout');
+            }
+            if (relay.retries !== 7) {
+                throw new Error('Wrong number of retries');
+            }
         });
     });
     describe('Starting and stopping', function () {
         var relay;
         before(function () {
-            relay = new Relay();
+            relay = new Relay({
+                timeout: 10000,
+                retries: 3
+            });
         });
-        it('should start a relay', function (done) {
-            this.timeout(60000);
+        it('should start a relay and should use retries', function (done) {
+            this.timeout(40000);
             relay.on('notice', function (event) {
                 console.log('NOTICE: ' + event.message);
             });
@@ -70,6 +81,7 @@ describe('Tor Relay', function () {
             relay.control.getInfo('version', done);
         });
     });
+
     describe('Access to socks', function () {
         var relay;
         before(function (done) {

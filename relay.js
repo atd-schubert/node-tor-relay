@@ -29,9 +29,11 @@ var createCredential = function () {
  * @param {string} [opts.dataDirectory] - Specify a directory to store tor data (default is an auto-created temporary dir, this will be removed if cleanUpOnExit is true)
  * @param {string} [opts.controlPassword] - Password for tor control (default is a random password)
  * @param {string} [opts.controlPort] - Port for tor control (default is a random free port)
+ * @param {number} [opts.retries=5] - Number of retries to find a circuit
  * @param {string} [opts.socksPort] - Port for socks5 (default is a random free port)
  * @param {string} [opts.socksUsername] - Username for socks5 (default is a random like a password)
  * @param {string} [opts.socksPassword] - Password for socks5 (default is a random password)
+ * @param {number} [opts.timeout=60000] - Timeout for finding a circuit
  * @constructor
  */
 var Relay = function TorRelay(opts) {
@@ -47,6 +49,12 @@ var Relay = function TorRelay(opts) {
         this.cleanUpOnExit = true;
     } else {
         this.cleanUpOnExit = opts.cleanUpOnExit;
+    }
+    if (opts.hasOwnProperty('retries')) {
+        this.retries = opts.retries;
+    }
+    if (opts.hasOwnProperty('timeout')) {
+        this.timeout = opts.timeout;
     }
 
     /**
@@ -155,9 +163,11 @@ Relay.prototype = {
         }
 
         async.parallel(asyncArr, function (err) {
-            var listener = function (event) {
+            var timeout,
+                listener = function (event) {
                     if (event.message.indexOf('Tor has successfully opened a circuit') !== -1) {
                         self.removeListener('notice', listener);
+                        clearTimeout(timeout);
                         /**
                          * @event TorRequest#ready
                          */
@@ -174,7 +184,10 @@ Relay.prototype = {
                     '--ControlPort', self.service.control.port,
                     //'--PidFile', 'tor.pid',
                     '--SocksPort', self.service.socks.port,
-                    '--DataDirectory', self.dataDirectory];
+                    '--DataDirectory', self.dataDirectory],
+                startFn,
+                tries = 0,
+                restart;
             if (err) {
                 return cb(err);
             }
@@ -187,51 +200,73 @@ Relay.prototype = {
                     '--Socks5ProxyPassword', self.service.socks.password);
             }
 
-            self.process = spawn('tor', params);
-            self.process.on('exit', function () {
-                self.process = null;
-                self.control = null;
-            });
-
             self.on('notice', listener);
 
-            self.process.stdout.on('data', function (chunk) {
-                var arr = chunk.toString().split(/\r?\n/),
-                    i,
-                    tmp,
-                    year = (new Date()).getFullYear();
-
-                for (i = 0; i < arr.length; i += 1) {
-                    if (arr[i] !== '') {
-                        tmp = {
-                            type: arr[i].substring(arr[i].indexOf('[') + 1, arr[i].indexOf(']')),
-                            date: new Date(arr[i].substr(0, 7) + year + arr[i].substr(6, 12)),
-                            message: arr[i].substr(arr[i].indexOf(']') + 2),
-                            data: arr[i]
-                        };
-                        /**
-                         * @event TorRequest#notice
-                         * @type {{}}
-                         * @property {string} type - Type of message
-                         * @property {Array} messages - Array of messages
-                         * @property {number} code - Status code
-                         * @property {string} type - Type of message
-                         */
-                        /**
-                         * @event TorRequest#warn
-                         * @type {{}}
-                         * @property {string} type - Type of message
-                         * @property {Array} messages - Array of messages
-                         * @property {number} code - Status code
-                         * @property {string} type - Type of message
-                         */
-                        self.emit(tmp.type, tmp);
+            startFn = function () {
+                restart = false;
+                self.process = spawn('tor', params);
+                self.process.on('exit', function () {
+                    if (restart) {
+                        return startFn();
                     }
+                    self.process = null;
+                    self.control = null;
+                });
 
-                }
+                self.process.stdout.on('data', function (chunk) {
+                    var arr = chunk.toString().split(/\r?\n/),
+                        i,
+                        tmp,
+                        year = (new Date()).getFullYear();
+
+                    for (i = 0; i < arr.length; i += 1) {
+                        if (arr[i] !== '') {
+                            tmp = {
+                                type: arr[i].substring(arr[i].indexOf('[') + 1, arr[i].indexOf(']')),
+                                date: new Date(arr[i].substr(0, 7) + year + arr[i].substr(6, 12)),
+                                message: arr[i].substr(arr[i].indexOf(']') + 2),
+                                data: arr[i]
+                            };
+                            /**
+                             * @event TorRequest#notice
+                             * @type {{}}
+                             * @property {string} type - Type of message
+                             * @property {Array} messages - Array of messages
+                             * @property {number} code - Status code
+                             * @property {string} type - Type of message
+                             */
+                            /**
+                             * @event TorRequest#warn
+                             * @type {{}}
+                             * @property {string} type - Type of message
+                             * @property {Array} messages - Array of messages
+                             * @property {number} code - Status code
+                             * @property {string} type - Type of message
+                             */
+                            self.emit(tmp.type, tmp);
+                        }
+
+                    }
+                });
+
+                timeout = setTimeout(function () {
+                    console.error('Can not establish a circuit');
+                    self.process.kill('SIGKILL');
+                    tries += 1;
+                    if (self.retries >= tries) {
+                        console.error('Retry establishing a circuit', tries);
+                        //self.removeAllListeners('notice');
+                        //self.removeAllListeners('warn');
+                        restart = true;
+                        return;
+                    }
+                    cb(new Error('Can not establish a connection to a circuit'));
+                }, self.timeout);
+            };
+
+            startFn();
 
 
-            });
 
             self.control = new TorControl({
                 port: self.service.control.port,
@@ -297,7 +332,15 @@ Relay.prototype = {
      * @type {process|null}
      */
     process: null,
-    service: null
+    /**
+     * Number of retries to find a circuit
+     */
+    retries: 5,
+    service: null,
+    /**
+     * Time to wait for a circuit
+     */
+    timeout: 60000
 
 };
 
